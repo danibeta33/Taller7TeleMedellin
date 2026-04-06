@@ -683,7 +683,7 @@ MonoBehaviour:
   opcion3Text: {fileID: 849763382}
   temporizadorText: {fileID: 529235202}
   estadoText: {fileID: 914608740}
-  duracionVotacionSegundos: 10
+  duracionVotacionSegundos: 6
   duracionCuentaRegresivaSegundos: 3
   intervaloDebugSegundos: 3
   opcionActiva: 0
