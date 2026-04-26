@@ -5,19 +5,23 @@ public class ActivacionDeManos : MonoBehaviour
     [Header("Fuente de Hand Tracking")]
     [SerializeField] private HandTrackingCenter handTrackingCenter;
     [SerializeField] private bool contarSoloPulgarArriba = true;
+    [SerializeField] private bool useExternalCount;
 
     [Header("Objetos por cantidad de manos")]
     [SerializeField] private GameObject[] objetosPorCantidad;
 
     [Header("Suavizado")]
-    [SerializeField] private int framesParaAceptarConteo = 4;
+    [SerializeField] private float stabilityTime = 1.5f;
+    [SerializeField] private bool freezeOnFinish;
 
     [Header("Contador (solo lectura)")]
     [SerializeField] private int conteoManosActual;
     [SerializeField] private int conteoManosAceptado;
 
-    private int ultimoConteoCrudo = -1;
-    private int framesConMismoConteo;
+    private int externalHandsCount;
+    private int conteoPendiente = -1;
+    private float tiempoEstable;
+    private bool isFrozen;
 
     public int ConteoManosActual => conteoManosActual;
     public int ConteoManosAceptado => conteoManosAceptado;
@@ -35,24 +39,58 @@ public class ActivacionDeManos : MonoBehaviour
 
     private void Update()
     {
+        if (isFrozen)
+        {
+            return;
+        }
+
         var conteoCrudo = ObtenerConteoCrudo();
         conteoManosActual = conteoCrudo;
 
-        ActualizarConteoAceptado(conteoCrudo);
-        AplicarActivacionPorConteo(conteoManosAceptado);
+        ActualizarConteoSuavizado(conteoCrudo);
     }
 
     public void ReiniciarConteo()
     {
         conteoManosActual = 0;
         conteoManosAceptado = 0;
-        ultimoConteoCrudo = -1;
-        framesConMismoConteo = 0;
+        externalHandsCount = 0;
+        conteoPendiente = 0;
+        tiempoEstable = 0f;
+        isFrozen = false;
         AplicarActivacionPorConteo(0);
+    }
+
+    public void SetUseExternalCount(bool enabled)
+    {
+        useExternalCount = enabled;
+    }
+
+    public void SetExternalHandsCount(int count)
+    {
+        externalHandsCount = Mathf.Max(0, count);
+    }
+
+    public void FreezeCurrentState(bool freeze)
+    {
+        isFrozen = freeze;
+    }
+
+    public void FinishActivationPhase()
+    {
+        if (freezeOnFinish)
+        {
+            isFrozen = true;
+        }
     }
 
     private int ObtenerConteoCrudo()
     {
+        if (useExternalCount)
+        {
+            return externalHandsCount;
+        }
+
         if (handTrackingCenter == null)
         {
             return 0;
@@ -66,19 +104,28 @@ public class ActivacionDeManos : MonoBehaviour
         return handTrackingCenter.GetDetectedHandsCount();
     }
 
-    private void ActualizarConteoAceptado(int conteoCrudo)
+    private void ActualizarConteoSuavizado(int conteoCrudo)
     {
-        if (conteoCrudo != ultimoConteoCrudo)
+        if (conteoCrudo == conteoManosAceptado)
         {
-            ultimoConteoCrudo = conteoCrudo;
-            framesConMismoConteo = 1;
+            conteoPendiente = conteoCrudo;
+            tiempoEstable = 0f;
             return;
         }
 
-        framesConMismoConteo++;
-        if (framesConMismoConteo >= Mathf.Max(1, framesParaAceptarConteo))
+        if (conteoCrudo != conteoPendiente)
         {
-            conteoManosAceptado = conteoCrudo;
+            conteoPendiente = conteoCrudo;
+            tiempoEstable = 0f;
+            return;
+        }
+
+        tiempoEstable += Time.deltaTime;
+        if (tiempoEstable >= Mathf.Max(0.05f, stabilityTime))
+        {
+            conteoManosAceptado = conteoPendiente;
+            tiempoEstable = 0f;
+            AplicarActivacionPorConteo(conteoManosAceptado);
         }
     }
 

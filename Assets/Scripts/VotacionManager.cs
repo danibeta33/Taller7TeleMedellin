@@ -1,180 +1,354 @@
-using System.Collections.Generic;
-using Mediapipe;
+using System.Collections;
 using TMPro;
 using UnityEngine;
 
 public class VotacionManager : MonoBehaviour
 {
-    private enum EstadoVotacion
+    public enum VotingMode
     {
-        Waiting,
-        Countdown,
-        Voting,
-        Finished,
+        Registration,
+        FreeHands,
     }
 
-    [Header("Opciones de votacion (texto configurable)")]
-    [SerializeField] private string opcion1 = "Opcion 1";
-    [SerializeField] private string opcion2 = "Opcion 2";
-    [SerializeField] private string opcion3 = "Opcion 3";
-
-    [Header("Textos UI (TMP)")]
+    [Header("UI")]
+    [SerializeField] private TMP_Text estadoText;
+    [SerializeField] private TMP_Text temporizadorText;
     [SerializeField] private TMP_Text opcion1Text;
     [SerializeField] private TMP_Text opcion2Text;
     [SerializeField] private TMP_Text opcion3Text;
-    [SerializeField] private TMP_Text temporizadorText;
-    [SerializeField] private TMP_Text estadoText;
 
-    [Header("Configuracion de votacion")]
-    [SerializeField] private float duracionVotacionSegundos = 10f;
-    [SerializeField] private float duracionCuentaRegresivaSegundos = 3f;
-    [SerializeField] private float intervaloDebugSegundos = 5f;
-    [SerializeField] private int opcionActiva = 0;
+    [Header("Votacion")]
+    [SerializeField] private float votingTimePerOptionSeconds = 6f;
+    [SerializeField] private VotingMode votingMode = VotingMode.FreeHands;
+
+    [Header("Visualizacion por opcion")]
+    [SerializeField] private ActivacionDeManos[] activacionPorOpcion = new ActivacionDeManos[3];
+    [SerializeField] private bool freezeActivacionOnFinish = true;
 
     [Header("Fuente Centralizada de Manos")]
     [SerializeField] private HandTrackingCenter handTrackingCenter;
 
-    [Header("Integracion con IngresoManager")]
-    [SerializeField] private GameObject numberManagerPanel;
+    private readonly string[] optionLabels = { "Opcion A", "Opcion B", "Opcion C" };
+    private readonly int[] votesPerOption = new int[3];
+    private int lastWinnerIndex = -1;
+    private Coroutine activeVotingCoroutine;
+    private bool cancelRequested;
 
-    private bool votacionActiva;
-    private EstadoVotacion estadoActual = EstadoVotacion.Waiting;
-    private float tiempoRestante;
-    private float acumuladorVoto;
-    private float acumuladorDebug;
-    private int manosDetectadasActuales;
-    private int manosIniciales;
-    private readonly int[] votosPorOpcion = new int[3];
-    private Coroutine flujoVotacionCoroutine;
-    private bool esperandoCierrePanel;
-    private bool panelEstabaActivo;
-    void Start()
+    public bool VotingInProgress { get; private set; }
+    public VotingMode CurrentVotingMode => votingMode;
+
+    private void Awake()
     {
-        // Inicializa textos configurables de las 3 opciones.
-        ActualizarTextosOpciones();
-        ResolverFuenteManos();
-        ActualizarTextoTemporizador(0f, false);
-        ActualizarEstadoTexto("Esperando inicio...");
-        panelEstabaActivo = numberManagerPanel != null && numberManagerPanel.activeSelf;
+        ResolveHandSource();
+        ApplyOptionsText();
     }
 
-    void Update()
+    public IEnumerator StartVoting()
     {
-        // NUEVO: Si el panel pasa de activo a inactivo, arranca automaticamente el flujo.
-        if (estadoActual == EstadoVotacion.Waiting && !esperandoCierrePanel && numberManagerPanel != null)
+        if (VotingInProgress)
         {
-            var panelActivoAhora = numberManagerPanel.activeSelf;
-            if (panelEstabaActivo && !panelActivoAhora)
-            {
-                IniciarFlujoDeVotacion();
-            }
-            panelEstabaActivo = panelActivoAhora;
+            yield break;
         }
 
-        // El countdown inicia solo cuando el panel de IngresoManager ya esta desactivado.
-        if (estadoActual == EstadoVotacion.Waiting && esperandoCierrePanel && numberManagerPanel != null && !numberManagerPanel.activeSelf)
+        ResolveHandSource();
+        cancelRequested = false;
+        VotingInProgress = true;
+        lastWinnerIndex = -1;
+
+        for (var i = 0; i < votesPerOption.Length; i++)
         {
-            esperandoCierrePanel = false;
-            if (flujoVotacionCoroutine != null)
-            {
-                StopCoroutine(flujoVotacionCoroutine);
-            }
-            flujoVotacionCoroutine = StartCoroutine(CuentaRegresivaEIniciarVotacionCoroutine());
+            votesPerOption[i] = 0;
         }
+
+        PrepareActivationDisplays();
+
+        ApplyOptionsText();
+
+        if (!cancelRequested)
+        {
+            yield return StartCoroutine(VotingCoroutine());
+        }
+
+        UpdateStatusText("Votacion finalizada");
+        UpdateTimerText("Votacion finalizada");
+
+        if (freezeActivacionOnFinish)
+        {
+            FreezeAllActivationDisplays(true);
+        }
+
+        VotingInProgress = false;
+        activeVotingCoroutine = null;
     }
 
-    // NUEVO: Inicia el flujo completo previo a la votacion.
+    // Compatibilidad: mantiene firmas usadas por escenas previas.
     public void IniciarFlujoDeVotacion()
     {
-        if (estadoActual == EstadoVotacion.Countdown || estadoActual == EstadoVotacion.Voting)
+        if (activeVotingCoroutine != null)
         {
-            return;
+            StopCoroutine(activeVotingCoroutine);
         }
 
-        LeerManosDesdeMediaPipeExistente();
-        manosIniciales = manosDetectadasActuales;
-
-        if (flujoVotacionCoroutine != null)
-        {
-            StopCoroutine(flujoVotacionCoroutine);
-        }
-
-        if (numberManagerPanel == null)
-        {
-            // Si no hay panel asignado, conserva el flujo previo.
-            flujoVotacionCoroutine = StartCoroutine(CuentaRegresivaEIniciarVotacionCoroutine());
-            return;
-        }
-
-        if (!numberManagerPanel.activeSelf)
-        {
-            flujoVotacionCoroutine = StartCoroutine(CuentaRegresivaEIniciarVotacionCoroutine());
-            return;
-        }
-
-        esperandoCierrePanel = true;
-        ActualizarEstadoTexto("Esperando cierre del panel...");
+        activeVotingCoroutine = StartCoroutine(StartVoting());
     }
 
-    // Permite cambiar la opcion que recibira votos (0, 1 o 2).
-    public void SeleccionarOpcion(int indice)
-    {
-        opcionActiva = Mathf.Clamp(indice, 0, 2);
-    }
-
+    // Compatibilidad con UI antigua.
     public void IniciarVotacion()
     {
-        votosPorOpcion[0] = 0;
-        votosPorOpcion[1] = 0;
-        votosPorOpcion[2] = 0;
-
-        if (flujoVotacionCoroutine != null)
-        {
-            StopCoroutine(flujoVotacionCoroutine);
-        }
-
-        flujoVotacionCoroutine = StartCoroutine(SecuenciaVotacionPorOpcionesCoroutine());
+        IniciarFlujoDeVotacion();
     }
 
     public void DetenerVotacion()
     {
-        if (!votacionActiva)
+        if (!VotingInProgress)
         {
             return;
         }
 
-        votacionActiva = false;
-        estadoActual = EstadoVotacion.Finished;
-        ActualizarTextoTemporizador(0f, false);
-        ActualizarEstadoTexto("Votacion finalizada");
-
-        Debug.Log(
-            "Votacion finalizada | " +
-            opcion1 + ": " + votosPorOpcion[0] + " votos | " +
-            opcion2 + ": " + votosPorOpcion[1] + " votos | " +
-            opcion3 + ": " + votosPorOpcion[2] + " votos");
+        cancelRequested = true;
     }
 
-    // Punto de entrada opcional si ya recibes MultiHandLandmarkList/lista desde otro evento.
-    public void ActualizarDesdeMultiHandLandmarkList(IReadOnlyList<NormalizedLandmarkList> multiHandLandmarkList)
+    public void ResetVotingData()
     {
-        manosDetectadasActuales = multiHandLandmarkList == null ? 0 : multiHandLandmarkList.Count;
+        cancelRequested = true;
+
+        if (activeVotingCoroutine != null)
+        {
+            StopCoroutine(activeVotingCoroutine);
+            activeVotingCoroutine = null;
+        }
+
+        VotingInProgress = false;
+        lastWinnerIndex = -1;
+
+        for (var i = 0; i < votesPerOption.Length; i++)
+        {
+            votesPerOption[i] = 0;
+        }
+
+        UpdateStatusText(string.Empty);
+        UpdateTimerText(string.Empty);
+        FreezeAllActivationDisplays(false);
+    }
+
+    public int GetWinnerIndex()
+    {
+        return lastWinnerIndex;
+    }
+
+    public void SetVotingMode(VotingMode mode)
+    {
+        votingMode = mode;
     }
 
     public int ObtenerVotosOpcion(int indice)
     {
-        var i = Mathf.Clamp(indice, 0, 2);
-        return votosPorOpcion[i];
+        var safeIndex = Mathf.Clamp(indice, 0, votesPerOption.Length - 1);
+        return votesPerOption[safeIndex];
     }
 
-    private void ActualizarTextosOpciones()
+    public int[] GetVotesSnapshot()
     {
-        if (opcion1Text != null) opcion1Text.text = opcion1;
-        if (opcion2Text != null) opcion2Text.text = opcion2;
-        if (opcion3Text != null) opcion3Text.text = opcion3;
+        var snapshot = new int[votesPerOption.Length];
+        for (var i = 0; i < votesPerOption.Length; i++)
+        {
+            snapshot[i] = votesPerOption[i];
+        }
+        return snapshot;
     }
 
-    private void ResolverFuenteManos()
+    public void SetOptionsLabels(string labelA, string labelB, string labelC)
+    {
+        optionLabels[0] = string.IsNullOrWhiteSpace(labelA) ? "Opcion A" : labelA;
+        optionLabels[1] = string.IsNullOrWhiteSpace(labelB) ? "Opcion B" : labelB;
+        optionLabels[2] = string.IsNullOrWhiteSpace(labelC) ? "Opcion C" : labelC;
+        ApplyOptionsText();
+    }
+
+    private IEnumerator VotingCoroutine()
+    {
+        for (var i = 0; i < optionLabels.Length; i++)
+        {
+            if (cancelRequested)
+            {
+                yield break;
+            }
+
+            var voteWindow = Mathf.Max(0.1f, votingTimePerOptionSeconds);
+            var maxThumbsUp = 0;
+
+            ActivateDisplayForOption(i);
+
+            UpdateStatusText("Vota ahora por: " + optionLabels[i]);
+
+            while (voteWindow > 0f)
+            {
+                voteWindow -= Time.deltaTime;
+                if (voteWindow < 0f)
+                {
+                    voteWindow = 0f;
+                }
+
+                var currentThumbsUp = GetCurrentHandsCountByMode();
+                if (currentThumbsUp > maxThumbsUp)
+                {
+                    maxThumbsUp = currentThumbsUp;
+                }
+
+                PushLiveCountToOption(i, currentThumbsUp);
+
+                UpdateTimerText(Mathf.CeilToInt(voteWindow).ToString());
+                yield return null;
+            }
+
+            votesPerOption[i] = Mathf.Max(0, maxThumbsUp);
+            PushLiveCountToOption(i, votesPerOption[i]);
+            FreezeDisplayForOption(i, true);
+        }
+
+        ResolveWinner();
+    }
+
+    private void ResolveWinner()
+    {
+        var bestScore = int.MinValue;
+        var bestIndex = 0;
+
+        for (var i = 0; i < votesPerOption.Length; i++)
+        {
+            if (votesPerOption[i] <= bestScore)
+            {
+                continue;
+            }
+
+            bestScore = votesPerOption[i];
+            bestIndex = i;
+        }
+
+        lastWinnerIndex = bestIndex;
+        UpdateStatusText("Ganador: " + optionLabels[bestIndex] + " (" + votesPerOption[bestIndex] + " votos)");
+    }
+
+    private int GetCurrentHandsCountByMode()
+    {
+        if (handTrackingCenter == null)
+        {
+            ResolveHandSource();
+        }
+
+        if (handTrackingCenter == null)
+        {
+            return 0;
+        }
+
+        if (votingMode == VotingMode.Registration)
+        {
+            return handTrackingCenter.GetThumbsUpHandsCount();
+        }
+
+        return handTrackingCenter.GetDetectedHandsCount();
+    }
+
+    private void PrepareActivationDisplays()
+    {
+        if (activacionPorOpcion == null)
+        {
+            return;
+        }
+
+        for (var i = 0; i < activacionPorOpcion.Length; i++)
+        {
+            var activacion = activacionPorOpcion[i];
+            if (activacion == null)
+            {
+                continue;
+            }
+
+            activacion.ReiniciarConteo();
+            activacion.SetUseExternalCount(true);
+            activacion.FreezeCurrentState(false);
+            activacion.SetExternalHandsCount(0);
+        }
+    }
+
+    private void ActivateDisplayForOption(int optionIndex)
+    {
+        if (activacionPorOpcion == null)
+        {
+            return;
+        }
+
+        for (var i = 0; i < activacionPorOpcion.Length; i++)
+        {
+            var activacion = activacionPorOpcion[i];
+            if (activacion == null)
+            {
+                continue;
+            }
+
+            if (i == optionIndex)
+            {
+                activacion.SetUseExternalCount(true);
+                activacion.FreezeCurrentState(false);
+                continue;
+            }
+
+            activacion.FreezeCurrentState(true);
+        }
+    }
+
+    private void PushLiveCountToOption(int optionIndex, int count)
+    {
+        if (activacionPorOpcion == null || optionIndex < 0 || optionIndex >= activacionPorOpcion.Length)
+        {
+            return;
+        }
+
+        var activacion = activacionPorOpcion[optionIndex];
+        if (activacion == null)
+        {
+            return;
+        }
+
+        activacion.SetExternalHandsCount(Mathf.Max(0, count));
+    }
+
+    private void FreezeDisplayForOption(int optionIndex, bool freeze)
+    {
+        if (activacionPorOpcion == null || optionIndex < 0 || optionIndex >= activacionPorOpcion.Length)
+        {
+            return;
+        }
+
+        var activacion = activacionPorOpcion[optionIndex];
+        if (activacion == null)
+        {
+            return;
+        }
+
+        activacion.FreezeCurrentState(freeze);
+    }
+
+    private void FreezeAllActivationDisplays(bool freeze)
+    {
+        if (activacionPorOpcion == null)
+        {
+            return;
+        }
+
+        for (var i = 0; i < activacionPorOpcion.Length; i++)
+        {
+            var activacion = activacionPorOpcion[i];
+            if (activacion == null)
+            {
+                continue;
+            }
+
+            activacion.FreezeCurrentState(freeze);
+        }
+    }
+
+    private void ResolveHandSource()
     {
         if (handTrackingCenter != null)
         {
@@ -191,156 +365,37 @@ public class VotacionManager : MonoBehaviour
         handTrackingCenter = host.AddComponent<HandTrackingCenter>();
     }
 
-    private void LeerManosDesdeMediaPipeExistente()
+    private void ApplyOptionsText()
     {
-        if (handTrackingCenter == null)
+        if (opcion1Text != null)
         {
-            ResolverFuenteManos();
+            opcion1Text.text = optionLabels[0];
         }
 
-        if (handTrackingCenter == null)
+        if (opcion2Text != null)
         {
-            manosDetectadasActuales = 0;
-            return;
+            opcion2Text.text = optionLabels[1];
         }
 
-        manosDetectadasActuales = handTrackingCenter.GetHands().Count;
+        if (opcion3Text != null)
+        {
+            opcion3Text.text = optionLabels[2];
+        }
     }
 
-    private void ProcesarTemporizador()
-    {
-        tiempoRestante -= Time.deltaTime;
-        if (tiempoRestante <= 0f)
-        {
-            tiempoRestante = 0f;
-            ActualizarTextoTemporizador(0f, false);
-            DetenerVotacion();
-            return;
-        }
-
-        ActualizarTextoTemporizador(tiempoRestante, true);
-    }
-
-    // Cuenta regresiva previa 3 -> 2 -> 1 -> 0 antes de habilitar votos.
-    private System.Collections.IEnumerator CuentaRegresivaEIniciarVotacionCoroutine()
-    {
-        estadoActual = EstadoVotacion.Countdown;
-        ActualizarEstadoTexto("Preparando votacion...");
-
-        var pasos = Mathf.Max(1, Mathf.RoundToInt(duracionCuentaRegresivaSegundos));
-        for (var i = pasos; i >= 1; i--)
-        {
-            if (temporizadorText != null)
-            {
-                temporizadorText.text = i.ToString();
-            }
-            yield return new WaitForSeconds(1f);
-        }
-
-        if (temporizadorText != null)
-        {
-            temporizadorText.text = "0";
-        }
-
-        IniciarVotacion();
-    }
-
-    // NUEVO: Ejecuta opcion 1, luego 2, luego 3 con 10 segundos cada una.
-    private System.Collections.IEnumerator SecuenciaVotacionPorOpcionesCoroutine()
-    {
-        votacionActiva = true;
-        estadoActual = EstadoVotacion.Voting;
-
-        for (var indiceOpcion = 0; indiceOpcion < 3; indiceOpcion++)
-        {
-            opcionActiva = indiceOpcion;
-            votosPorOpcion[indiceOpcion] = 0;
-            manosDetectadasActuales = 0;
-
-            tiempoRestante = Mathf.Max(0.1f, duracionVotacionSegundos);
-            acumuladorDebug = 0f;
-
-            var textoOpcion = ObtenerTextoOpcion(indiceOpcion);
-            ActualizarEstadoTexto("Es tiempo para la opcion " + (indiceOpcion + 1) + ": " + textoOpcion);
-
-            while (tiempoRestante > 0f)
-            {
-                LeerManosDesdeMediaPipeExistente();
-
-                tiempoRestante -= Time.deltaTime;
-                if (tiempoRestante < 0f)
-                {
-                    tiempoRestante = 0f;
-                }
-                ActualizarTextoTemporizador(tiempoRestante, true);
-
-                ProcesarDebugPeriodico();
-                yield return null;
-            }
-
-            // El voto de la opcion se toma al finalizar su ventana de tiempo.
-            LeerManosDesdeMediaPipeExistente();
-            votosPorOpcion[indiceOpcion] = Mathf.Max(0, manosDetectadasActuales);
-
-            Debug.Log("[VotacionManager] Resultado opcion " + (indiceOpcion + 1) + " (" + textoOpcion + "): " + votosPorOpcion[indiceOpcion] + " votos");
-        }
-
-        DetenerVotacion();
-    }
-
-    private void ProcesarDebugPeriodico()
-    {
-        if (intervaloDebugSegundos <= 0f)
-        {
-            return;
-        }
-
-        acumuladorDebug += Time.deltaTime;
-        if (acumuladorDebug < intervaloDebugSegundos)
-        {
-            return;
-        }
-
-        acumuladorDebug -= intervaloDebugSegundos;
-        Debug.Log("[VotacionManager] Manos detectadas actualmente: " + manosDetectadasActuales + " | manos iniciales: " + manosIniciales);
-    }
-
-    private void ActualizarTextoTemporizador(float segundos, bool activa)
-    {
-        if (temporizadorText == null)
-        {
-            return;
-        }
-
-        if (!activa)
-        {
-            temporizadorText.text = "Votacion finalizada";
-            return;
-        }
-
-        temporizadorText.text = "Tiempo restante: " + Mathf.CeilToInt(segundos) + "s";
-    }
-
-    private void ActualizarEstadoTexto(string mensaje)
+    private void UpdateStatusText(string text)
     {
         if (estadoText != null)
         {
-            estadoText.text = mensaje;
+            estadoText.text = text;
         }
     }
 
-    private string ObtenerTextoOpcion(int indice)
+    private void UpdateTimerText(string text)
     {
-        switch (indice)
+        if (temporizadorText != null)
         {
-            case 0:
-                return opcion1;
-            case 1:
-                return opcion2;
-            case 2:
-                return opcion3;
-            default:
-                return "Opcion";
+            temporizadorText.text = text;
         }
     }
 }
