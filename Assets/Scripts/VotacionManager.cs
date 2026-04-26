@@ -1,8 +1,5 @@
 using System.Collections.Generic;
-using System.Reflection;
 using Mediapipe;
-using Mediapipe.Tasks.Vision.HandLandmarker;
-using Mediapipe.Unity;
 using TMPro;
 using UnityEngine;
 
@@ -34,15 +31,11 @@ public class VotacionManager : MonoBehaviour
     [SerializeField] private float intervaloDebugSegundos = 5f;
     [SerializeField] private int opcionActiva = 0;
 
-    [Header("Fuente MediaPipe existente")]
-    [SerializeField] private HandLandmarkerResultAnnotationController handResultController;
+    [Header("Fuente Centralizada de Manos")]
+    [SerializeField] private HandTrackingCenter handTrackingCenter;
 
-    [Header("Integracion con NumberManager")]
+    [Header("Integracion con IngresoManager")]
     [SerializeField] private GameObject numberManagerPanel;
-
-    // Campo privado existente en HandLandmarkerResultAnnotationController.
-    // Se lee por reflexion para no modificar otros scripts del proyecto.
-    private FieldInfo currentTargetField;
 
     private bool votacionActiva;
     private EstadoVotacion estadoActual = EstadoVotacion.Waiting;
@@ -55,13 +48,11 @@ public class VotacionManager : MonoBehaviour
     private Coroutine flujoVotacionCoroutine;
     private bool esperandoCierrePanel;
     private bool panelEstabaActivo;
-    private const string HandAnnotationCloneName = "HandLandmarkList Annotation(Clone)";
-
     void Start()
     {
         // Inicializa textos configurables de las 3 opciones.
         ActualizarTextosOpciones();
-        ResolverFuenteMediaPipe();
+        ResolverFuenteManos();
         ActualizarTextoTemporizador(0f, false);
         ActualizarEstadoTexto("Esperando inicio...");
         panelEstabaActivo = numberManagerPanel != null && numberManagerPanel.activeSelf;
@@ -80,7 +71,7 @@ public class VotacionManager : MonoBehaviour
             panelEstabaActivo = panelActivoAhora;
         }
 
-        // El countdown inicia solo cuando el panel de NumberManager ya esta desactivado.
+        // El countdown inicia solo cuando el panel de IngresoManager ya esta desactivado.
         if (estadoActual == EstadoVotacion.Waiting && esperandoCierrePanel && numberManagerPanel != null && !numberManagerPanel.activeSelf)
         {
             esperandoCierrePanel = false;
@@ -170,12 +161,6 @@ public class VotacionManager : MonoBehaviour
         manosDetectadasActuales = multiHandLandmarkList == null ? 0 : multiHandLandmarkList.Count;
     }
 
-    // Punto de entrada opcional si ya recibes HandLandmarkerResult desde otro evento.
-    public void ActualizarDesdeHandLandmarkerResult(HandLandmarkerResult result)
-    {
-        manosDetectadasActuales = result.handLandmarks == null ? 0 : result.handLandmarks.Count;
-    }
-
     public int ObtenerVotosOpcion(int indice)
     {
         var i = Mathf.Clamp(indice, 0, 2);
@@ -189,64 +174,37 @@ public class VotacionManager : MonoBehaviour
         if (opcion3Text != null) opcion3Text.text = opcion3;
     }
 
-    private void ResolverFuenteMediaPipe()
+    private void ResolverFuenteManos()
     {
-        if (handResultController == null)
-        {
-            handResultController = FindObjectOfType<HandLandmarkerResultAnnotationController>();
-        }
-
-        if (handResultController != null)
-        {
-            currentTargetField = typeof(HandLandmarkerResultAnnotationController)
-                .GetField("_currentTarget", BindingFlags.Instance | BindingFlags.NonPublic);
-        }
-    }
-
-    private void LeerManosDesdeMediaPipeExistente()
-    {
-        manosDetectadasActuales = 0;
-
-        if (handResultController == null || currentTargetField == null)
+        if (handTrackingCenter != null)
         {
             return;
         }
 
-        var raw = currentTargetField.GetValue(handResultController);
-        if (raw is HandLandmarkerResult resultado)
+        handTrackingCenter = FindFirstObjectByType<HandTrackingCenter>();
+        if (handTrackingCenter != null)
         {
-            var manosPorResultado = resultado.handLandmarks == null ? 0 : resultado.handLandmarks.Count;
-            var manosPorAnotacionActiva = ContarAnotacionesDeManoActivas();
-
-            // Solo cuentan manos cuya anotacion visual esta activa en escena.
-            manosDetectadasActuales = Mathf.Min(manosPorResultado, manosPorAnotacionActiva);
+            return;
         }
+
+        var host = new GameObject("HandTrackingCenter");
+        handTrackingCenter = host.AddComponent<HandTrackingCenter>();
     }
 
-    private int ContarAnotacionesDeManoActivas()
+    private void LeerManosDesdeMediaPipeExistente()
     {
-        if (handResultController == null)
+        if (handTrackingCenter == null)
         {
-            return 0;
+            ResolverFuenteManos();
         }
 
-        var contador = 0;
-        var transforms = handResultController.GetComponentsInChildren<Transform>(true);
-        for (var i = 0; i < transforms.Length; i++)
+        if (handTrackingCenter == null)
         {
-            var current = transforms[i];
-            if (current == null)
-            {
-                continue;
-            }
-
-            if (current.name == HandAnnotationCloneName && current.gameObject.activeInHierarchy)
-            {
-                contador++;
-            }
+            manosDetectadasActuales = 0;
+            return;
         }
 
-        return contador;
+        manosDetectadasActuales = handTrackingCenter.GetHands().Count;
     }
 
     private void ProcesarTemporizador()
