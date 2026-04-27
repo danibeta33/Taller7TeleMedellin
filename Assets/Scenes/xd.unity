@@ -1531,6 +1531,7 @@ MonoBehaviour:
   votingMode: 1
   tieMessageSeconds: 2
   winnerMessageSeconds: 2
+  optionWarmupSeconds: 0.35
   activacionPorOpcion:
   - {fileID: 782345266}
   - {fileID: 1837771048}
@@ -10098,7 +10099,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 1}
   m_AnchorMax: {x: 0.5, y: 1}
-  m_AnchoredPosition: {x: 0.000026451433, y: -76.157}
+  m_AnchoredPosition: {x: 0.000026451433, y: -76.15698}
   m_SizeDelta: {x: 1986.64, y: 113.62}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!114 &1652765975
@@ -12927,6 +12928,7 @@ MonoBehaviour:
   screen: {fileID: 1457117699}
   runningMode: 0
   _handLandmarkerResultAnnotationController: {fileID: 956269474}
+  _imageSourceRecoveryIntervalSeconds: 0.5
 --- !u!4 &2049193438
 Transform:
   m_ObjectHideFlags: 0

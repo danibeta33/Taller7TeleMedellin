@@ -17,11 +17,16 @@ namespace Mediapipe.Unity.Sample.HandLandmarkDetection
     Tasks.Core.BaseOptions.Delegate.GPU;
 #endif
 
-    public ImageReadMode ImageReadMode { get; set; } = ImageReadMode.CPUAsync;
+        public ImageReadMode ImageReadMode { get; set; } =
+    #if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+      ImageReadMode.CPU;
+    #else
+      ImageReadMode.CPUAsync;
+    #endif
 
     public Tasks.Vision.Core.RunningMode RunningMode { get; set; } = Tasks.Vision.Core.RunningMode.LIVE_STREAM;
 
-    public int NumHands { get; set; } = 10;
+    public int NumHands { get; set; } = 2;
     public float MinHandDetectionConfidence { get; set; } = 0.5f;
     public float MinHandPresenceConfidence { get; set; } = 0.5f;
     public float MinTrackingConfidence { get; set; } = 0.5f;

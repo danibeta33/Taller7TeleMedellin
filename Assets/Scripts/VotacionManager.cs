@@ -24,6 +24,9 @@ public class VotacionManager : MonoBehaviour
     [SerializeField] private float tieMessageSeconds = 2f;
     [SerializeField] private float winnerMessageSeconds = 2f;
 
+    [Header("Lectura por opcion")]
+    [SerializeField] private float optionWarmupSeconds = 0.35f;
+
     [Header("Visualizacion por opcion")]
     [SerializeField] private ActivacionDeManos[] activacionPorOpcion = new ActivacionDeManos[3];
     [SerializeField] private bool freezeActivacionOnFinish = true;
@@ -195,7 +198,9 @@ public class VotacionManager : MonoBehaviour
             }
 
             var voteWindow = Mathf.Max(0.1f, votingTimePerOptionSeconds);
-            var maxThumbsUp = 0;
+            var elapsedInOption = 0f;
+            var optionSamples = new Dictionary<int, int>();
+            var lastObservedHands = 0;
 
             ActivateDisplayForOption(i);
 
@@ -203,16 +208,21 @@ public class VotacionManager : MonoBehaviour
 
             while (voteWindow > 0f)
             {
+                elapsedInOption += Time.deltaTime;
                 voteWindow -= Time.deltaTime;
                 if (voteWindow < 0f)
                 {
                     voteWindow = 0f;
                 }
 
-                var currentThumbsUp = GetCurrentHandsCountByMode();
-                if (currentThumbsUp > maxThumbsUp)
+                // Lectura directa de manos por frame para no mezclar estados entre opciones.
+                var currentThumbsUp = Mathf.Max(0, GetCurrentHandsCountByMode());
+                lastObservedHands = currentThumbsUp;
+
+                // Evita arrastre de frames de transicion entre opciones.
+                if (elapsedInOption >= Mathf.Max(0f, optionWarmupSeconds))
                 {
-                    maxThumbsUp = currentThumbsUp;
+                    RegisterOptionSample(optionSamples, currentThumbsUp);
                 }
 
                 PushLiveCountToOption(i, currentThumbsUp);
@@ -221,7 +231,8 @@ public class VotacionManager : MonoBehaviour
                 yield return null;
             }
 
-            votesPerOption[i] = Mathf.Max(0, maxThumbsUp);
+            votesPerOption[i] = ResolveVoteFromOptionSamples(optionSamples, lastObservedHands);
+            Debug.Log($"[VotacionManager] Opcion {i + 1} muestras: {FormatOptionSamples(optionSamples)} => voto: {votesPerOption[i]}");
             PushLiveCountToOption(i, votesPerOption[i]);
             FreezeDisplayForOption(i, true);
         }
@@ -231,24 +242,26 @@ public class VotacionManager : MonoBehaviour
 
     private IEnumerator ResolveWinnerCoroutine()
     {
-        var bestScore = int.MinValue;
         lastTiedWinnerIndices.Clear();
+
+        var maxVotes = 0;
+        for (var i = 0; i < votesPerOption.Length; i++)
+        {
+            if (votesPerOption[i] > maxVotes)
+            {
+                maxVotes = votesPerOption[i];
+            }
+        }
 
         for (var i = 0; i < votesPerOption.Length; i++)
         {
-            if (votesPerOption[i] > bestScore)
-            {
-                bestScore = votesPerOption[i];
-                lastTiedWinnerIndices.Clear();
-                lastTiedWinnerIndices.Add(i);
-                continue;
-            }
-
-            if (votesPerOption[i] == bestScore)
+            if (votesPerOption[i] == maxVotes)
             {
                 lastTiedWinnerIndices.Add(i);
             }
         }
+
+        Debug.Log($"[VotacionManager] Votos finales => A:{votesPerOption[0]} B:{votesPerOption[1]} C:{votesPerOption[2]} | Max:{maxVotes}");
 
         if (lastTiedWinnerIndices.Count == 0)
         {
@@ -258,6 +271,7 @@ public class VotacionManager : MonoBehaviour
             yield break;
         }
 
+        // Solo se considera empate cuando hay mas de una opcion con el mismo voto maximo.
         lastVoteWasTie = lastTiedWinnerIndices.Count > 1;
         var randomChoice = Random.Range(0, lastTiedWinnerIndices.Count);
         lastWinnerIndex = lastTiedWinnerIndices[randomChoice];
@@ -307,6 +321,72 @@ public class VotacionManager : MonoBehaviour
         }
 
         return handTrackingCenter.GetDetectedHandsCount();
+    }
+
+    private static void RegisterOptionSample(Dictionary<int, int> samples, int hands)
+    {
+        if (samples.TryGetValue(hands, out var count))
+        {
+            samples[hands] = count + 1;
+            return;
+        }
+
+        samples[hands] = 1;
+    }
+
+    private static int ResolveVoteFromOptionSamples(Dictionary<int, int> samples, int fallbackHands)
+    {
+        if (samples == null || samples.Count == 0)
+        {
+            return Mathf.Max(0, fallbackHands);
+        }
+
+        var bestHands = 0;
+        var bestFrequency = -1;
+
+        foreach (var pair in samples)
+        {
+            var hands = pair.Key;
+            var frequency = pair.Value;
+
+            if (frequency > bestFrequency)
+            {
+                bestFrequency = frequency;
+                bestHands = hands;
+                continue;
+            }
+
+            // Si hay empate de frecuencia, preferimos el menor conteo para evitar sobrelecturas por picos transitorios.
+            if (frequency == bestFrequency && hands < bestHands)
+            {
+                bestHands = hands;
+            }
+        }
+
+        return Mathf.Max(0, bestHands);
+    }
+
+    private static string FormatOptionSamples(Dictionary<int, int> samples)
+    {
+        if (samples == null || samples.Count == 0)
+        {
+            return "sin-muestras";
+        }
+
+        var text = string.Empty;
+        var first = true;
+        foreach (var pair in samples)
+        {
+            if (!first)
+            {
+                text += ", ";
+            }
+
+            text += pair.Key + "=>" + pair.Value;
+            first = false;
+        }
+
+        return text;
     }
 
     private void PrepareActivationDisplays()

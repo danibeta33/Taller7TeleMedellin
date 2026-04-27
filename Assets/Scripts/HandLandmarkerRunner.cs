@@ -14,6 +14,7 @@ namespace Mediapipe.Unity.Sample.HandLandmarkDetection
   public class HandLandmarkerRunner : VisionTaskApiRunner<HandLandmarker>
   {
     [SerializeField] private HandLandmarkerResultAnnotationController _handLandmarkerResultAnnotationController;
+    [SerializeField] private float _imageSourceRecoveryIntervalSeconds = 0.5f;
 
     private Experimental.TextureFramePool _textureFramePool;
     private readonly object _latestResultLock = new object();
@@ -66,7 +67,14 @@ namespace Mediapipe.Unity.Sample.HandLandmarkDetection
       taskApi = HandLandmarker.CreateFromOptions(options, GpuManager.GpuResources);
       var imageSource = ImageSourceProvider.ImageSource;
 
-      yield return imageSource.Play();
+      System.Exception startImageSourceException = null;
+      yield return RunSafe(imageSource.Play(), e => startImageSourceException = e);
+
+      if (startImageSourceException != null)
+      {
+        Debug.LogError($"Failed to start ImageSource: {startImageSourceException.Message}");
+        yield break;
+      }
 
       if (!imageSource.isPrepared)
       {
@@ -92,6 +100,7 @@ namespace Mediapipe.Unity.Sample.HandLandmarkDetection
       var waitUntilReqDone = new WaitUntil(() => req.done);
       var waitForEndOfFrame = new WaitForEndOfFrame();
       var result = HandLandmarkerResult.Alloc(options.numHands);
+      var nextImageSourceRecoveryTime = 0f;
 
       // NOTE: we can share the GL context of the render thread with MediaPipe (for now, only on Android)
       var canUseGpuImage = SystemInfo.graphicsDeviceType == GraphicsDeviceType.OpenGLES3 && GpuManager.GpuResources != null;
@@ -102,6 +111,32 @@ namespace Mediapipe.Unity.Sample.HandLandmarkDetection
         if (isPaused)
         {
           yield return new WaitWhile(() => isPaused);
+        }
+
+        if (!imageSource.isPlaying)
+        {
+          if (Time.unscaledTime >= nextImageSourceRecoveryTime)
+          {
+            nextImageSourceRecoveryTime = Time.unscaledTime + Mathf.Max(0.1f, _imageSourceRecoveryIntervalSeconds);
+
+            System.Exception recoveryException = null;
+            if (imageSource.isPrepared)
+            {
+              yield return RunSafe(imageSource.Resume(), e => recoveryException = e);
+            }
+            else
+            {
+              yield return RunSafe(imageSource.Play(), e => recoveryException = e);
+            }
+
+            if (recoveryException != null)
+            {
+              Debug.LogWarning($"ImageSource recovery failed: {recoveryException.Message}");
+            }
+          }
+
+          yield return null;
+          continue;
         }
 
         if (!_textureFramePool.TryGetTextureFrame(out var textureFrame))
@@ -191,6 +226,30 @@ namespace Mediapipe.Unity.Sample.HandLandmarkDetection
       {
         result.CloneTo(ref _latestResult);
         _hasLatestResult = _latestResult.handLandmarks != null;
+      }
+    }
+
+    private static IEnumerator RunSafe(IEnumerator operation, System.Action<System.Exception> onException)
+    {
+      while (true)
+      {
+        object current;
+        try
+        {
+          if (!operation.MoveNext())
+          {
+            yield break;
+          }
+
+          current = operation.Current;
+        }
+        catch (System.Exception e)
+        {
+          onException?.Invoke(e);
+          yield break;
+        }
+
+        yield return current;
       }
     }
   }
