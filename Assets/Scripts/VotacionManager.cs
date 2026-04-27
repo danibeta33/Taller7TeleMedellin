@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
 
@@ -20,6 +21,8 @@ public class VotacionManager : MonoBehaviour
     [Header("Votacion")]
     [SerializeField] private float votingTimePerOptionSeconds = 6f;
     [SerializeField] private VotingMode votingMode = VotingMode.FreeHands;
+    [SerializeField] private float tieMessageSeconds = 2f;
+    [SerializeField] private float winnerMessageSeconds = 2f;
 
     [Header("Visualizacion por opcion")]
     [SerializeField] private ActivacionDeManos[] activacionPorOpcion = new ActivacionDeManos[3];
@@ -30,9 +33,11 @@ public class VotacionManager : MonoBehaviour
 
     private readonly string[] optionLabels = { "Opcion A", "Opcion B", "Opcion C" };
     private readonly int[] votesPerOption = new int[3];
+    private readonly List<int> lastTiedWinnerIndices = new List<int>();
     private int lastWinnerIndex = -1;
     private Coroutine activeVotingCoroutine;
     private bool cancelRequested;
+    private bool lastVoteWasTie;
 
     public bool VotingInProgress { get; private set; }
     public VotingMode CurrentVotingMode => votingMode;
@@ -69,8 +74,11 @@ public class VotacionManager : MonoBehaviour
             yield return StartCoroutine(VotingCoroutine());
         }
 
-        UpdateStatusText("Votacion finalizada");
-        UpdateTimerText("Votacion finalizada");
+        if (!lastVoteWasTie)
+        {
+            UpdateStatusText("Votacion finalizada");
+            UpdateTimerText("Votacion finalizada");
+        }
 
         if (freezeActivacionOnFinish)
         {
@@ -120,6 +128,8 @@ public class VotacionManager : MonoBehaviour
 
         VotingInProgress = false;
         lastWinnerIndex = -1;
+        lastVoteWasTie = false;
+        lastTiedWinnerIndices.Clear();
 
         for (var i = 0; i < votesPerOption.Length; i++)
         {
@@ -134,6 +144,16 @@ public class VotacionManager : MonoBehaviour
     public int GetWinnerIndex()
     {
         return lastWinnerIndex;
+    }
+
+    public bool WasLastVoteTie()
+    {
+        return lastVoteWasTie;
+    }
+
+    public int[] GetLastTiedWinnerIndicesSnapshot()
+    {
+        return lastTiedWinnerIndices.ToArray();
     }
 
     public void SetVotingMode(VotingMode mode)
@@ -206,27 +226,67 @@ public class VotacionManager : MonoBehaviour
             FreezeDisplayForOption(i, true);
         }
 
-        ResolveWinner();
+        yield return StartCoroutine(ResolveWinnerCoroutine());
     }
 
-    private void ResolveWinner()
+    private IEnumerator ResolveWinnerCoroutine()
     {
         var bestScore = int.MinValue;
-        var bestIndex = 0;
+        lastTiedWinnerIndices.Clear();
 
         for (var i = 0; i < votesPerOption.Length; i++)
         {
-            if (votesPerOption[i] <= bestScore)
+            if (votesPerOption[i] > bestScore)
             {
+                bestScore = votesPerOption[i];
+                lastTiedWinnerIndices.Clear();
+                lastTiedWinnerIndices.Add(i);
                 continue;
             }
 
-            bestScore = votesPerOption[i];
-            bestIndex = i;
+            if (votesPerOption[i] == bestScore)
+            {
+                lastTiedWinnerIndices.Add(i);
+            }
         }
 
-        lastWinnerIndex = bestIndex;
-        UpdateStatusText("Ganador: " + optionLabels[bestIndex] + " (" + votesPerOption[bestIndex] + " votos)");
+        if (lastTiedWinnerIndices.Count == 0)
+        {
+            lastWinnerIndex = 0;
+            lastVoteWasTie = false;
+            UpdateStatusText("Ganador: " + optionLabels[0] + " (" + votesPerOption[0] + " votos)");
+            yield break;
+        }
+
+        lastVoteWasTie = lastTiedWinnerIndices.Count > 1;
+        var randomChoice = Random.Range(0, lastTiedWinnerIndices.Count);
+        lastWinnerIndex = lastTiedWinnerIndices[randomChoice];
+
+        if (!lastVoteWasTie)
+        {
+            UpdateStatusText("Ganador: " + optionLabels[lastWinnerIndex] + " (" + votesPerOption[lastWinnerIndex] + " votos)");
+            yield break;
+        }
+
+        UpdateTimerText("0");
+        UpdateStatusText("Empate, Elijiendo al azar");
+
+        // Existing scene instances may have these serialized values as 0.
+        var tieWait = tieMessageSeconds > 0f ? tieMessageSeconds : 2f;
+        if (tieWait > 0f)
+        {
+            yield return new WaitForSeconds(tieWait);
+        }
+
+        UpdateStatusText("Gano la opcion #" + (lastWinnerIndex + 1));
+
+        var winnerWait = winnerMessageSeconds > 0f ? winnerMessageSeconds : 2f;
+        if (winnerWait > 0f)
+        {
+            yield return new WaitForSeconds(winnerWait);
+        }
+
+        UpdateTimerText("0");
     }
 
     private int GetCurrentHandsCountByMode()

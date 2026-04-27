@@ -38,6 +38,8 @@ public class GameSequenceManager : MonoBehaviour
 
     private void OnEnable()
     {
+        HidePreviewLabel();
+
         if (autoStartOnEnable)
         {
             StartSequence();
@@ -63,7 +65,7 @@ public class GameSequenceManager : MonoBehaviour
         }
 
         HideAllPanels();
-        ClearPreviewLabel();
+        HidePreviewLabel();
     }
 
     public void PauseFlow()
@@ -114,7 +116,7 @@ public class GameSequenceManager : MonoBehaviour
         CurrentCycleIndex = -1;
         DetectedPlayers = 0;
         HideAllPanels();
-        ClearPreviewLabel();
+        HidePreviewLabel();
 
         yield return StartCoroutine(RunRegistrationPhase());
 
@@ -130,7 +132,7 @@ public class GameSequenceManager : MonoBehaviour
             Log("[GameSequenceManager] Iniciando ciclo " + (i + 1));
 
             SetOnlyPanelActive(panelVideo);
-            ClearPreviewLabel();
+            HidePreviewLabel();
             yield return StartCoroutine(PlayClipCoroutine(cycle.introVideo));
 
             yield return StartCoroutine(PreviewOptionCoroutine(cycle.labelA, cycle.optionA));
@@ -138,6 +140,7 @@ public class GameSequenceManager : MonoBehaviour
             yield return StartCoroutine(PreviewOptionCoroutine(cycle.labelC, cycle.optionC));
 
             SetOnlyPanelActive(panelVotacion);
+            HidePreviewLabel();
             if (votacionManager != null)
             {
                 votacionManager.SetVotingMode(VotacionManager.VotingMode.FreeHands);
@@ -150,12 +153,13 @@ public class GameSequenceManager : MonoBehaviour
             var winnerLabel = ResolveWinnerLabel(cycle, winnerIndex);
 
             SetOnlyPanelActive(panelVideo);
-            SetPreviewLabel("Ganadora: " + winnerLabel);
+            HidePreviewLabel();
+            Log("[GameSequenceManager] Ganadora: " + winnerLabel);
             yield return StartCoroutine(PlayClipCoroutine(winnerClip));
         }
 
         HideAllPanels();
-        ClearPreviewLabel();
+        HidePreviewLabel();
         Log("[GameSequenceManager] Experiencia finalizada");
 
         sequenceCoroutine = null;
@@ -254,7 +258,7 @@ public class GameSequenceManager : MonoBehaviour
     private IEnumerator PreviewOptionCoroutine(string label, VideoClip clip)
     {
         SetOnlyPanelActive(panelVideo);
-        SetPreviewLabel(string.IsNullOrWhiteSpace(label) ? "Opcion" : label);
+        ShowPreviewLabel(string.IsNullOrWhiteSpace(label) ? "Opcion" : label);
         yield return StartCoroutine(PlayClipCoroutine(clip));
     }
 
@@ -334,19 +338,21 @@ public class GameSequenceManager : MonoBehaviour
         }
     }
 
-    private void SetPreviewLabel(string value)
+    private void ShowPreviewLabel(string value)
     {
         if (opcionLabelText != null)
         {
+            opcionLabelText.gameObject.SetActive(true);
             opcionLabelText.text = value;
         }
     }
 
-    private void ClearPreviewLabel()
+    private void HidePreviewLabel()
     {
         if (opcionLabelText != null)
         {
             opcionLabelText.text = string.Empty;
+            opcionLabelText.gameObject.SetActive(false);
         }
     }
 
